@@ -1,0 +1,76 @@
+name: Build & Release Latest acme-dns
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *"   # check every day
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - name: Get latest upstream release tag
+        id: upstream
+        run: |
+          TAG=$(curl -fsSL https://api.github.com/repos/joohoi/acme-dns/releases/latest \
+            | jq -r .tag_name)
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Latest upstream tag: $TAG"
+
+      - name: Check if ARM64 release already exists
+        id: already_built
+        run: |
+          STATUS=$(curl -sSL \
+            -H "Accept: application/vnd.github+json" \
+            -o /dev/null -w "%{http_code}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ steps.upstream.outputs.tag }}")
+
+          if [[ "$STATUS" == "200" ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Release ${{ steps.upstream.outputs.tag }} already exists — skipping build."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "Release ${{ steps.upstream.outputs.tag }} not found — will build."
+          fi
+
+      - name: Clone upstream at release tag
+        if: steps.already_built.outputs.skip == 'false'
+        run: |
+          git clone --branch ${{ steps.upstream.outputs.tag }} --depth 1 https://github.com/joohoi/acme-dns.git
+ 
+      - name: Install ARM64 compiler
+        if: steps.already_built.outputs.skip == 'false'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcc libc6-dev
+
+      - name: Setup Go
+        if: steps.already_built.outputs.skip == 'false'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: acme-dns/go.mod
+          cache-dependency-path: acme-dns/go.sum
+
+      - name: Build ARM64 binary
+        if: steps.already_built.outputs.skip == 'false'
+        working-directory: acme-dns
+        env:
+          GOOS: linux
+          CGO_ENABLED: 1
+        run: |
+          go build \
+            -trimpath \
+            -ldflags="-s -w -X main.version=${{ steps.upstream.outputs.tag }}" \
+            -o acme-dns-linux-arm64
+
+      - name: Create GitHub Release
+        if: steps.already_built.outputs.skip == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.upstream.outputs.tag }}
+          name: acme-dns ${{ steps.upstream.outputs.tag }}
+          files: acme-dns/acme-dns-linux-arm64

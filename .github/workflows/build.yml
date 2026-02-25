@@ -1,0 +1,66 @@
+name: Build & Release Latest acme-dns (ARM64 Static)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *"   # check every day
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Get latest upstream release tag
+        id: upstream
+        run: |
+          TAG=$(curl -fsSL https://api.github.com/repos/joohoi/acme-dns/releases/latest \
+            | jq -r .tag_name)
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Latest upstream tag: $TAG"
+
+      - name: Check latest release in this repo
+        id: local
+        run: |
+          LATEST=$(curl -fsSL https://api.github.com/repos/${{ github.repository }}/releases/latest \
+            | jq -r .tag_name 2>/dev/null || echo "none")
+          echo "tag=$LATEST" >> $GITHUB_OUTPUT
+          echo "Latest local tag: $LATEST"
+
+      - name: Stop if already built
+        if: steps.upstream.outputs.tag == steps.local.outputs.tag
+        run: |
+          echo "Already up-to-date. Exiting."
+          exit 0
+
+      - name: Clone upstream at release tag
+        run: |
+          git clone --branch ${{ steps.upstream.outputs.tag }} \
+            --depth 1 \
+            https://github.com/joohoi/acme-dns.git
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build fully static ARM64 binary
+        working-directory: acme-dns
+        env:
+          GOOS: linux
+          GOARCH: arm64
+          CGO_ENABLED: 0
+        run: |
+          go build \
+            -trimpath \
+            -ldflags="-s -w -extldflags '-static'" \
+            -o acme-dns-${{ steps.upstream.outputs.tag }}-linux-arm64
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.upstream.outputs.tag }}
+          name: acme-dns ${{ steps.upstream.outputs.tag }}
+          files: acme-dns/acme-dns-${{ steps.upstream.outputs.tag }}-linux-arm64
